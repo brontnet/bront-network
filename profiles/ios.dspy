@@ -1,0 +1,16 @@
+# ios.dspy - Cisco IOS Device Profile
+# Place in: ./ or ~/.bront/ or /etc/bront/
+## begin commands start
+show clock
+terminal length 0
+terminal width 0
+show privilege
+@PY priv = int(re.search(r'level.*?(\d+)', buffer).group(1)) if 'level' in buffer else 15
+@PY if priv < 15:
+    enable
+    @PROMPT "assword:" "$ENABLE_PASSWORD"
+## begin commands end
+## logout commands start
+show clock
+exit
+## logout commands end

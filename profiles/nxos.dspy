@@ -1,0 +1,12 @@
+# nxos.dspy - Cisco NX-OS Device Profile
+# Place in: ./ or ~/.bront/ or /etc/bront/
+## begin commands start
+show clock
+terminal length 0
+terminal width 511
+## begin commands end
+## logout commands start
+
+show clock
+exit
+## logout commands end

@@ -1,0 +1,29 @@
+namespace: bront
+name: network
+version: 2.0.18
+readme: README.md
+authors:
+  - Roman Blyumin
+description: |
+  Bront Language for network automation - CLI-native scripting for network devices.
+  Includes both Ansible module and standalone CLI.
+license_file: LICENSE
+tags:
+  - networking
+  - automation
+  - cisco
+  - iosxr
+  - ios
+  - nxos
+  - junos
+  - eos
+  - nokia
+dependencies: {}
+repository: https://github.com/bront/bront-network
+documentation: https://github.com/bront/bront-network/docs
+homepage: https://github.com/bront/bront-network
+issues: https://github.com/bront/bront-network/issues
+build_ignore:
+  - '*.tar.gz'
+  - '.git'
+  - '.gitignore'

@@ -1,0 +1,17 @@
+## eos.dspy - Arista EOS Device Profile
+## Place in: ./ or ~/.bront/ or /etc/bront/
+
+## begin commands start
+show clock
+term len 0
+term width 0
+@ONPROMPT "Uncommitted changes found"
+@RESPONSE "no"
+@ONPROMPT "Do you wish to proceed with this commit anyway"
+@RESPONSE "no"
+## begin commands end
+
+## logout commands start
+show clock
+exit
+## logout commands end

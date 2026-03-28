@@ -1,0 +1,17 @@
+## health_check.bront - Example Bront Script
+
+@PERMAPROMPT "RP/0/RP0/CPU0:.*#|.*#"
+
+@ONERROR "error|failed|invalid"
+@REPORT "ERROR on %d at %t:\n%s" CONTEXT=3
+
+show version
+@SAVE version
+
+show clock
+@SAVE clock
+
+show interface brief
+@SAVE interfaces
+
+@PY print(f"Health check completed for {device_name}")

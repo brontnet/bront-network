@@ -1,0 +1,15 @@
+## junos.dspy - Juniper Junos Device Profile
+## Place in: ./ or ~/.bront/ or /etc/bront/
+
+## begin commands start
+@PERMAPROMPT \S+@\S+>|\S+@\S+#|\S+@\S+%|sftp>
+set cli screen-length 0
+set cli screen-width 1024
+show system uptime
+@ONPROMPT "Discard uncommitted changes"
+@RESPONSE "yes"
+## begin commands end
+
+## logout commands start
+exit
+## logout commands end

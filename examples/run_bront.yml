@@ -1,0 +1,28 @@
+---
+# run_bront.yml - Example Ansible Playbook
+# Usage: ansible-playbook -i inventory.yml run_bront.yml -l ROUTER1
+
+- name: Run bront script
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Execute bront script
+      bront.network.bront:
+        script: health_check.bront
+        host: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        hostname: "{{ inventory_hostname }}"
+        network_os: "{{ ansible_network_os }}"
+      register: result
+
+    - name: Show output
+      debug:
+        var: result.output
+      when: result.output | length > 0
+
+    - name: Show errors
+      debug:
+        var: result.errors
+      when: result.errors | length > 0

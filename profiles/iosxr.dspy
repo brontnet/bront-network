@@ -1,0 +1,17 @@
+# iosxr.dspy - Cisco IOS-XR Device Profile
+# Place in: ./ or ~/.bront/ or /etc/bront/
+
+## begin commands start
+@PERMAPROMPT RP/\d+/\S+:.*#|RP/\d+/\S+:.*>|sysadmin-vm:.*#|sysadmin-vm:.*>
+show clock
+terminal length 0
+terminal width 0
+## begin commands end
+
+## logout commands start
+show clock
+exit
+## logout commands end
+
+## prompt pattern (optional - can also use @PERMAPROMPT in script)
+# RP/0/RP0/CPU0:.*#

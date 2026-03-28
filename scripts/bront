@@ -1,0 +1,664 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+bront - Bront Language CLI
+
+Standalone command-line interface for the Bront network automation language.
+Uses Ansible inventory for device information and credentials.
+
+Usage:
+    bront <script.bront> <hostname> [-i inventory] [--vault-password-file FILE]
+    
+Examples:
+    bront health_check.bront ROUTER1
+    bront health_check.bront ROUTER1 -i inventory.yml
+    bront script.bront ROUTER1 --vault-password-file .vault_pass
+"""
+
+import sys
+import os
+import re
+import argparse
+import subprocess
+from pathlib import Path
+
+# Find bront_core - check multiple locations
+# Resolve symlinks to get actual script location
+SCRIPT_PATH = os.path.realpath(__file__)
+SCRIPT_DIR = os.path.dirname(SCRIPT_PATH)
+
+# Try import from different locations
+bront_core_found = False
+
+# 1. Try relative to script (inside collection structure) - most reliable
+collection_path = os.path.join(SCRIPT_DIR, '..', 'plugins', 'module_utils')
+sys.path.insert(0, os.path.abspath(collection_path))
+try:
+    from bront_core import (
+        load_config, BrontParser, BrontCodeGenerator, BrontExecutor, flatten_to_brontpath
+    )
+    bront_core_found = True
+except ImportError:
+    pass
+
+# 2. Try from Ansible collection namespace (when installed)
+if not bront_core_found:
+    try:
+        from ansible_collections.bront.network.plugins.module_utils.bront_core import (
+            load_config, BrontParser, BrontCodeGenerator, BrontExecutor, flatten_to_brontpath
+        )
+        bront_core_found = True
+    except ImportError:
+        pass
+
+# 3. Try local bront_core directory (standalone extraction)
+if not bront_core_found:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from bront_core import (
+            load_config, BrontParser, BrontCodeGenerator, BrontExecutor, flatten_to_brontpath
+        )
+        bront_core_found = True
+    except ImportError:
+        pass
+
+if not bront_core_found:
+    print("Error: bront_core module not found")
+    print("Ensure bront is installed as Ansible collection or bront_core/ is in same directory")
+    sys.exit(1)
+
+# Default inventory search paths
+INVENTORY_PATHS = [
+    './inventory.yml',
+    './inventory.yaml', 
+    './inventory.ini',
+    './hosts',
+    '/etc/ansible/hosts',
+]
+
+# Default .dspy search paths (includes collection's profiles directory)
+DSPY_SEARCH_PATHS = [
+    './',
+    os.path.expanduser('~/.bront/'),
+    '/etc/bront/',
+    os.path.join(SCRIPT_DIR, '..', 'profiles'),  # Collection profiles
+    os.path.expanduser('~/.ansible/collections/ansible_collections/bront/network/profiles/'),
+]
+
+
+def parse_ini_inventory(content: str) -> dict:
+    """Parse INI format inventory."""
+    hosts = {}
+    current_group = 'ungrouped'
+    group_vars = {}
+    in_vars_section = False
+    
+    for line in content.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#') or line.startswith(';'):
+            continue
+        
+        # Group header
+        if line.startswith('[') and line.endswith(']'):
+            group_name = line[1:-1]
+            if ':vars' in group_name:
+                current_group = group_name.replace(':vars', '')
+                in_vars_section = True
+                if current_group not in group_vars:
+                    group_vars[current_group] = {}
+            else:
+                current_group = group_name
+                in_vars_section = False
+                if current_group not in group_vars:
+                    group_vars[current_group] = {}
+            continue
+        
+        # Variable assignment in :vars section
+        if in_vars_section and '=' in line:
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            # Remove quotes
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            group_vars[current_group][key] = value
+            continue
+        
+        # Host definition
+        if not in_vars_section:
+            parts = line.split()
+            if parts:
+                hostname = parts[0]
+                host_vars = {}
+                for part in parts[1:]:
+                    if '=' in part:
+                        key, value = part.split('=', 1)
+                        # Remove quotes
+                        if (value.startswith('"') and value.endswith('"')) or \
+                           (value.startswith("'") and value.endswith("'")):
+                            value = value[1:-1]
+                        host_vars[key] = value
+                
+                if hostname not in hosts:
+                    hosts[hostname] = {'_groups': []}
+                hosts[hostname].update(host_vars)
+                hosts[hostname]['_groups'].append(current_group)
+    
+    # Apply group vars to hosts
+    for hostname, host_data in hosts.items():
+        for group in host_data.get('_groups', []):
+            if group in group_vars:
+                for key, value in group_vars[group].items():
+                    if key not in host_data:
+                        host_data[key] = value
+        # Apply 'all' group vars
+        if 'all' in group_vars:
+            for key, value in group_vars['all'].items():
+                if key not in host_data:
+                    host_data[key] = value
+        # Clean up internal keys
+        if '_groups' in host_data:
+            del host_data['_groups']
+    
+    return hosts
+
+
+def parse_yaml_inventory(content: str, vault_password: str = None) -> dict:
+    """Parse YAML format inventory with optional vault decryption."""
+    try:
+        import yaml
+    except ImportError:
+        print("Error: PyYAML required for YAML inventory. Install with: pip install pyyaml")
+        sys.exit(1)
+    
+    # Always register !vault constructor so YAML parsing doesn't fail
+    # If vault password provided, decrypt; otherwise return raw encrypted string
+    if vault_password:
+        def vault_constructor(loader, node):
+            """Custom YAML constructor for !vault tags - decrypt."""
+            value = loader.construct_scalar(node)
+            return decrypt_vault_value(value, vault_password)
+    else:
+        def vault_constructor(loader, node):
+            """Custom YAML constructor for !vault tags - passthrough."""
+            value = loader.construct_scalar(node)
+            return '$ANSIBLE_VAULT;' + value.strip() if not value.startswith('$ANSIBLE_VAULT;') else value
+    
+    # Register the constructor
+    yaml.SafeLoader.add_constructor('!vault', vault_constructor)
+    
+    data = yaml.safe_load(content)
+    hosts = {}
+    
+    def extract_hosts(node, parent_vars=None):
+        if parent_vars is None:
+            parent_vars = {}
+        
+        if not isinstance(node, dict):
+            return
+        
+        # Get vars at this level
+        level_vars = parent_vars.copy()
+        if 'vars' in node:
+            level_vars.update(node['vars'])
+        
+        # Process hosts
+        if 'hosts' in node and isinstance(node['hosts'], dict):
+            for hostname, host_vars in node['hosts'].items():
+                if hostname not in hosts:
+                    hosts[hostname] = level_vars.copy()
+                if host_vars:
+                    hosts[hostname].update(host_vars)
+        
+        # Process children
+        if 'children' in node and isinstance(node['children'], dict):
+            for child_name, child_node in node['children'].items():
+                extract_hosts(child_node, level_vars)
+    
+    # Start from 'all' or root
+    if 'all' in data:
+        extract_hosts(data['all'])
+    else:
+        extract_hosts(data)
+    
+    return hosts
+
+
+def load_inventory(inventory_path: str = None, vault_password: str = None) -> dict:
+    """Load Ansible inventory file with optional vault decryption."""
+    # Find inventory file
+    if inventory_path:
+        paths_to_try = [inventory_path]
+    else:
+        paths_to_try = INVENTORY_PATHS
+    
+    inventory_file = None
+    for path in paths_to_try:
+        if os.path.exists(path):
+            inventory_file = path
+            break
+    
+    if not inventory_file:
+        print(f"Error: No inventory file found. Searched: {', '.join(paths_to_try)}")
+        sys.exit(1)
+    
+    print(f"Using inventory: {inventory_file}")
+    
+    with open(inventory_file, 'r') as f:
+        content = f.read()
+    
+    # Detect format
+    if inventory_file.endswith(('.yml', '.yaml')):
+        return parse_yaml_inventory(content, vault_password)
+    else:
+        # Try YAML first, fall back to INI
+        try:
+            import yaml
+            return parse_yaml_inventory(content, vault_password)
+        except:
+            return parse_ini_inventory(content)
+
+
+def decrypt_vault_value(value: str, vault_password: str) -> str:
+    """Decrypt Ansible vault encrypted value."""
+    if not value or not isinstance(value, str):
+        return value
+        
+    if not value.startswith('$ANSIBLE_VAULT;'):
+        return value
+    
+    if not vault_password:
+        print("Warning: Vault-encrypted value found but no vault password provided")
+        return value
+    
+    # Write vault content to temp file
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.vault', delete=False) as f:
+        f.write(value)
+        vault_file = f.name
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.pass', delete=False) as f:
+        f.write(vault_password)
+        pass_file = f.name
+    
+    try:
+        # Try using ansible-vault command
+        result = subprocess.run(
+            ['ansible-vault', 'decrypt', '--vault-password-file', pass_file, '--output', '-', vault_file],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            print(f"Warning: Failed to decrypt vault value: {result.stderr}")
+            return value
+    except FileNotFoundError:
+        print("Warning: ansible-vault command not found. Install ansible to decrypt vault values.")
+        return value
+    except subprocess.TimeoutExpired:
+        print("Warning: ansible-vault decryption timed out")
+        return value
+    except Exception as e:
+        print(f"Warning: Error decrypting vault value: {e}")
+        return value
+    finally:
+        try:
+            os.unlink(vault_file)
+            os.unlink(pass_file)
+        except:
+            pass
+
+
+def get_vault_password(vault_password_file: str = None) -> str:
+    """Get vault password from file or prompt."""
+    if vault_password_file:
+        if os.path.exists(vault_password_file):
+            with open(vault_password_file, 'r') as f:
+                return f.read().strip()
+        else:
+            print(f"Error: Vault password file not found: {vault_password_file}")
+            sys.exit(1)
+    
+    # Check environment variable
+    if 'ANSIBLE_VAULT_PASSWORD' in os.environ:
+        return os.environ['ANSIBLE_VAULT_PASSWORD']
+    
+    # Check default vault password file
+    default_vault_file = os.path.expanduser('~/.vault_pass')
+    if os.path.exists(default_vault_file):
+        with open(default_vault_file, 'r') as f:
+            return f.read().strip()
+    
+    return None
+
+
+def find_dspy_file(network_os: str):
+    """
+    Find .dspy file for given network OS.
+    
+    Returns:
+        Tuple of (file_path, content) - one will be set, the other None.
+        If file found on disk: (path, None)
+        If embedded profile found: (None, content)
+    """
+    dspy_filename = f"{network_os}.dspy"
+    
+    for search_path in DSPY_SEARCH_PATHS:
+        full_path = os.path.join(search_path, dspy_filename)
+        if os.path.exists(full_path):
+            return full_path, None
+    
+    # Fall back to embedded profiles
+    try:
+        from bront_core.profiles import get_embedded_profile
+        content = get_embedded_profile(network_os)
+        if content:
+            return None, content
+    except ImportError:
+        pass
+    
+    # Error message with search paths
+    searched = [os.path.join(p, dspy_filename) for p in DSPY_SEARCH_PATHS]
+    print(f"Error: Driver file not found: {dspy_filename}")
+    print(f"Searched paths: {', '.join(searched)}")
+    print(f"No embedded profile available for '{network_os}'")
+    sys.exit(1)
+
+
+def get_host_info(hostname: str, inventory: dict, vault_password: str = None) -> dict:
+    """Get device info from inventory for a host."""
+    if hostname not in inventory:
+        print(f"Error: Host '{hostname}' not found in inventory")
+        print(f"Available hosts: {', '.join(inventory.keys())}")
+        sys.exit(1)
+    
+    host_vars = inventory[hostname]
+    
+    # Check required fields
+    if 'ansible_network_os' not in host_vars:
+        print(f"Error: ansible_network_os not defined for host '{hostname}'")
+        sys.exit(1)
+    
+    # Build device info
+    connection = host_vars.get('bront_connection', 'ssh')
+    device_info = {
+        'hostname': hostname,
+        'host': host_vars.get('ansible_host', hostname),
+        'username': host_vars.get('ansible_user', 'admin'),
+        'password': host_vars.get('ansible_password', ''),
+        'port': int(host_vars.get('ansible_port', 23 if connection == 'telnet' else 22)),
+        'network_os': host_vars.get('ansible_network_os'),
+        'enable_password': host_vars.get('ansible_enable_password', ''),
+        'connection': connection,
+    }
+    
+    # Decrypt password if needed
+    if vault_password and device_info['password'].startswith('$ANSIBLE_VAULT;'):
+        device_info['password'] = decrypt_vault_value(device_info['password'], vault_password)
+    
+    # Decrypt enable_password if needed
+    if vault_password and device_info['enable_password'].startswith('$ANSIBLE_VAULT;'):
+        device_info['enable_password'] = decrypt_vault_value(device_info['enable_password'], vault_password)
+    
+    # Fall back to password if enable_password not set
+    if not device_info['enable_password']:
+        device_info['enable_password'] = device_info['password']
+    
+    return device_info
+
+
+def extract_sections(dspy_file: str = None, dspy_content: str = None):
+    """Extract begin and end sections from device profile."""
+    if dspy_file:
+        with open(dspy_file, 'r') as f:
+            content = f.read()
+    elif dspy_content:
+        content = dspy_content
+    else:
+        return '', ''
+    
+    begin_match = re.search(
+        r'## begin commands start\n(.*?)## begin commands end', 
+        content, re.DOTALL
+    )
+    begin_section = begin_match.group(1).rstrip() if begin_match else ''
+    
+    end_match = re.search(
+        r'## logout commands start\n(.*?)## logout commands end', 
+        content, re.DOTALL
+    )
+    end_section = end_match.group(1).rstrip() if end_match else ''
+    
+    return begin_section, end_section
+
+
+def expand_bront_script(user_bront_file: str, dspy_file: str = None, dspy_content: str = None) -> str:
+    """Expand bront script with begin/end sections from dspy."""
+    begin, end = extract_sections(dspy_file=dspy_file, dspy_content=dspy_content)
+    
+    with open(user_bront_file, 'r') as f:
+        user_content = f.read().strip()
+    
+    # Extract @PERMAPROMPT and move to front
+    permaprompt_line = ''
+    user_lines = []
+    for line in user_content.split('\n'):
+        if line.strip().startswith('@PERMAPROMPT'):
+            permaprompt_line = line
+        else:
+            user_lines.append(line)
+    
+    user_content_without_prompt = '\n'.join(user_lines)
+    
+    # Build expanded content
+    parts = []
+    if permaprompt_line:
+        parts.append(permaprompt_line)
+    if begin:
+        parts.append(begin)
+    parts.append('## END_BEGIN_SECTION')
+    parts.append(user_content_without_prompt)
+    if end:
+        parts.append(end)
+    
+    return '\n'.join(parts)
+
+
+def run_bront_for_host(bront_file: str, hostname: str, inventory: dict, 
+                       vault_password: str, config: dict, dry_run: bool = False,
+                       script_vars: dict = None, run_id: str = None,
+                       no_profile: bool = False) -> dict:
+    """Run bront script for a single host."""
+    print(f"\n{'='*60}")
+    print(f"Processing host: {hostname}")
+    if run_id:
+        print(f"Run ID: {run_id}")
+    if dry_run:
+        print(f"MODE: DRY-RUN (@DRYRUN commands will be skipped)")
+    print(f"{'='*60}")
+    
+    # Get host info from inventory
+    device_info = get_host_info(hostname, inventory, vault_password)
+    
+    if no_profile:
+        # Skip profile expansion — script is already expanded (e.g. from logs)
+        print(f"Using driver: none (--no-profile)")
+        with open(bront_file, 'r') as f:
+            expanded_content = f.read()
+    else:
+        # Find appropriate .dspy file
+        dspy_file, dspy_content = find_dspy_file(device_info['network_os'])
+        if dspy_file:
+            print(f"Using driver: {dspy_file}")
+        else:
+            print(f"Using driver: embedded {device_info['network_os']} profile")
+        
+        # Expand bront script
+        expanded_content = expand_bront_script(bront_file, dspy_file=dspy_file, dspy_content=dspy_content)
+    
+    # Parse script with base_dir for @INCLUDE resolution
+    script_dir = os.path.dirname(os.path.abspath(bront_file))
+    parser = BrontParser(hostname=hostname, base_dir=script_dir)
+    directives = parser.parse_string(expanded_content)
+    
+    # Execute
+    executor = BrontExecutor(device_info, config, output_mode='console', dry_run=dry_run, script_vars=script_vars, run_id=run_id)
+    
+    # Save the executed script to log directory for reference
+    # Expand $DEVICE placeholders for the log
+    device_pt = hostname[:8]
+    device_pr = hostname[-4:] if len(hostname) >= 4 else hostname
+    log_content = expanded_content.replace('$DEVICEPT', device_pt)
+    log_content = log_content.replace('$DEVICEPR', device_pr)
+    log_content = log_content.replace('$DEVICE', hostname)
+    
+    with open(executor.bront_log_path, 'w') as f:
+        f.write(log_content)
+    
+    result = executor.execute(directives)
+    
+    # Print session report
+    print(f"\n=== Session Complete ===")
+    print(f"Run ID:      {executor.run_id}")
+    print(f"Work dir:    {executor.run_dir}")
+    print(f"Log dir:     {executor.log_path}")
+    print(f"Script log:  {executor.bront_log_path}")
+    print(f"Output log:  {executor.output_log_path}")
+    
+    # Check for execution failure (e.g. driver errors, exceptions)
+    if result.get('failed'):
+        print(f"\n=== EXECUTION FAILED ===")
+        print(f"Error: {result.get('msg', 'Unknown error')}")
+    
+    # Check if error log has content
+    has_errors = executor.error_buffer.strip() != ''
+    if has_errors:
+        print(f"Error log:   {executor.error_log_path} (ERRORS DETECTED)")
+        print(f"\n=== ERROR DETAILS ===")
+        print(executor.error_buffer)
+    else:
+        print(f"Error log:   {executor.error_log_path} (no errors)")
+    
+    # Show findings summary
+    findings = result.get('findings', [])
+    if findings:
+        # Show findings file path
+        if executor.findings_dir:
+            findings_file = os.path.join(executor.findings_dir, f'{executor.hostname}_findings.json')
+            print(f"Findings:    {findings_file}")
+        
+        high = sum(1 for f in findings if f.get('severity') == 'high')
+        medium = sum(1 for f in findings if f.get('severity') == 'medium')
+        low = sum(1 for f in findings if f.get('severity') == 'low')
+        info = sum(1 for f in findings if f.get('severity') == 'info')
+        print(f"\n=== FINDINGS: {len(findings)} total (high={high} medium={medium} low={low} info={info}) ===")
+        for f in findings:
+            print(f"  [{f.get('severity','?').upper()}] {f.get('finding','')}")
+    
+    result['hostname'] = hostname
+    return result
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='bront - Bront Language CLI v3.6',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bront health_check.bront ROUTER1
+  bront health_check.bront ROUTER1 -i inventory.yml
+  bront script.bront ROUTER1 --vault-password-file .vault_pass
+  bront deploy.bront ROUTER1 --dry-run
+  bront check.bront ROUTER1 -e interface=Gig0/0/0/1 -e vlan=100
+        """
+    )
+    
+    parser.add_argument('bront_file', help='Bront script file (.bront)')
+    parser.add_argument('host', help='Hostname from inventory')
+    parser.add_argument('-i', '--inventory', help='Inventory file path')
+    parser.add_argument('--vault-password-file', help='Vault password file')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Dry-run mode: @DRYRUN commands are echoed instead of executed')
+    parser.add_argument('--run-id', dest='run_id',
+                        help='Shared run ID for unified directory structure (auto-generated if not set)')
+    parser.add_argument('--no-profile', action='store_true',
+                        help='Skip device profile expansion (use when re-running expanded scripts from logs)')
+    parser.add_argument('-e', '--var', action='append', dest='vars', metavar='KEY=VALUE',
+                        help='Set script variable (can be used multiple times)')
+    
+    args = parser.parse_args()
+    
+    # Parse script variables
+    script_vars = {}
+    if args.vars:
+        for var in args.vars:
+            if '=' in var:
+                key, value = var.split('=', 1)
+                # Try to convert to int/float if possible
+                try:
+                    value = int(value)
+                except ValueError:
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass  # Keep as string
+                script_vars[key] = value
+            else:
+                print(f"Warning: Invalid variable format '{var}', expected KEY=VALUE")
+    
+    # Validate bront file
+    if not os.path.exists(args.bront_file):
+        print(f"Error: Bront file not found: {args.bront_file}")
+        sys.exit(1)
+    
+    # Get vault password if needed (do this BEFORE loading inventory)
+    vault_password = get_vault_password(args.vault_password_file)
+    
+    # Load inventory (with vault decryption if password provided)
+    inventory = load_inventory(args.inventory, vault_password)
+    
+    # Load config
+    bront_config = load_config()
+    config = {
+        'WORKDIR': bront_config.workdir,
+        'LOGDIR': bront_config.logdir,
+        'timestamp_subdirs': bront_config.timestamp_subdirs,
+    }
+    
+    print(f"Bront script: {args.bront_file}")
+    print(f"Host: {args.host}")
+    if args.run_id:
+        print(f"Run ID: {args.run_id}")
+    if args.dry_run:
+        print(f"Mode: DRY-RUN")
+    if args.no_profile:
+        print(f"Mode: NO-PROFILE (skipping device profile)")
+    if script_vars:
+        print(f"Variables: {script_vars}")
+    
+    try:
+        result = run_bront_for_host(args.bront_file, args.host, 
+                                   inventory, vault_password, config,
+                                   dry_run=args.dry_run, script_vars=script_vars,
+                                   run_id=args.run_id, no_profile=args.no_profile)
+        
+        # Exit with error code if failed
+        if result.get('failed'):
+            sys.exit(1)
+        elif result.get('errors'):
+            sys.exit(2)  # Completed but with errors
+        else:
+            sys.exit(0)
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

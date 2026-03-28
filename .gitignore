@@ -1,0 +1,35 @@
+# Build artifacts
+*.tar.gz
+
+# Python bytecode
+*.pyc
+__pycache__/
+
+# Bront runtime output
+bront_work/
+bront_logs/
+*.log
+*.txtdb
+
+# Device output files from @SAVE
+*_findings.json
+findings.json
+findings.csv
+
+# Editor/OS files
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Backup files
+*.backup
+*.bak
+
+# Ansible retry files
+*.retry
+
+# Vault password files
+.vault_pass

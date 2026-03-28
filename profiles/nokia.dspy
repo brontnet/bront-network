@@ -1,0 +1,11 @@
+## nokia.dspy - Nokia SR OS Device Profile
+## Place in: ./ or ~/.bront/ or /etc/bront/
+
+## begin commands start
+@PERMAPROMPT ^A:.*#|^A:.*$|^A:.*>|A:.*#|A:.*>|B:.*#|B:.*>
+environment no more
+## begin commands end
+
+## logout commands start
+logout
+## logout commands end

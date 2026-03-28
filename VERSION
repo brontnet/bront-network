@@ -1,0 +1,4 @@
+2.0.18
+Built: 2026-03-06
+Base: 2.0.17
+Changes: report() builtin, {var} substitution, empty for-loop fix, blank line support, NX-OS terminal width 511, embedded profile sync, show_output param, device_profile return value, README overhaul

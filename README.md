@@ -1,5 +1,9 @@
 # Bront
 
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/brontnet/bront-network)](https://github.com/brontnet/bront-network/releases)
+
 **CLI-native network automation.** Write what you would type — nothing more.
 
 Bront is a streamlined approach to network device automation. What takes 50 lines of Python fits in 5 lines of Bront — scripts look like CLI sessions. If you can type it on a terminal, you can automate it.
@@ -32,10 +36,50 @@ Run it:
 bront check.bront ROUTER1
 
 # Ansible playbook
-ansible-playbook -v -i inventory.ini site.yml
+ansible-playbook -i inventory.ini site.yml
 ```
 
 Same script, both modes — no changes needed.
+
+## Install
+
+```bash
+# Download latest release from GitHub
+# https://github.com/brontnet/bront-network/releases
+
+# Install as Ansible collection (includes standalone CLI)
+mkdir -p ~/.ansible/collections/ansible_collections/
+tar -xzf bront-network-<version>.tar.gz -C ~/.ansible/collections/ansible_collections/
+
+# Add standalone CLI to PATH
+export PATH="$PATH:~/.ansible/collections/ansible_collections/bront/network/scripts"
+
+# Install Python dependencies
+pip install pexpect pyyaml
+
+# Verify
+bront --help
+```
+
+## Quick Start
+
+**1. Create inventory** (`inventory.ini`):
+```ini
+[routers]
+ROUTER1 ansible_host=192.168.1.1 ansible_network_os=iosxr ansible_user=admin ansible_password=secret123
+```
+
+**2. Write script** (`check.bront`):
+```bront
+show interface brief
+show version
+@PY print(f"Collected data from {device_name}")
+```
+
+**3. Run**:
+```bash
+bront check.bront ROUTER1
+```
 
 ## Why Bront?
 
@@ -55,62 +99,36 @@ Same script, both modes — no changes needed.
 
 **Integrates with your existing tools.** Output is files and JSON — pipe it to ServiceNow, vulnerability scanners, CMDB imports, or any internal platform. No SDK, no adapter needed.
 
-## Requirements
+---
 
-**Standalone CLI:**
-- Python 3.8+
-- pexpect
-- PyYAML
+## Reference
 
-**For Ansible Vault support:**
-- Ansible (provides `ansible-vault` command)
+### Installation Options
 
-**For Ansible playbook integration:**
-- Ansible 2.9+
-
-## Installation
-
-### Standalone Installation
+**Standalone only** (no Ansible needed):
 
 ```bash
-# Extract to any location
 tar -xzf bront-network-<version>.tar.gz
 cd bront/network
-
-# Add to PATH (choose one)
 export PATH="$PATH:$(pwd)/scripts"
-# Or symlink
 ln -s $(pwd)/scripts/bront ~/bin/bront
-
-# Install Python dependencies
 pip install pexpect pyyaml
-
-# Verify
 bront --help
 ```
 
-### Ansible Collection Installation
+**Ansible collection** (includes standalone CLI):
 
 ```bash
-# Extract to Ansible collections path
 mkdir -p ~/.ansible/collections/ansible_collections/
 tar -xzf bront-network-<version>.tar.gz -C ~/.ansible/collections/ansible_collections/
-
-# Verify
 ansible-galaxy collection list | grep bront
 ```
 
 Device profiles are embedded in the collection and available automatically — no separate file installation needed.
 
-The Ansible collection also includes the standalone CLI. To use it, add the scripts directory to your PATH:
+### Inventory Format
 
-```bash
-export PATH="$PATH:~/.ansible/collections/ansible_collections/bront/network/scripts"
-```
-
-## Inventory Format
-
-Bront reads standard Ansible inventory files. Create `inventory.ini` in your working directory:
+Bront reads standard Ansible inventory files:
 
 ```ini
 [routers]
@@ -124,7 +142,7 @@ ansible_password=secret123
 ansible_port=22
 ```
 
-Or use YAML format (`inventory.yml`):
+Or YAML format (`inventory.yml`):
 
 ```yaml
 all:
@@ -147,29 +165,7 @@ all:
 | `ansible_port` | No | SSH port (default: 22) or telnet port (default: 23) |
 | `bront_connection` | No | `ssh` (default) or `telnet` |
 
-## Quick Start
-
-**1. Create inventory** (`inventory.ini`):
-```ini
-[routers]
-ROUTER1 ansible_host=192.168.1.1 ansible_network_os=iosxr ansible_user=admin ansible_password=secret123
-```
-
-**2. Write script** (`check.bront`):
-```bront
-show interface brief
-show version
-@PY print(f"Collected data from {device_name}")
-```
-
-**3. Run**:
-```bash
-bront check.bront ROUTER1
-```
-
-## CLI Usage
-
-### Standalone
+### Standalone CLI
 
 ```bash
 bront <script.bront> <hostname> [options]
@@ -298,7 +294,7 @@ ansible-playbook -i inventory.ini site.yml -l routers
 | `error_log` | Error log path |
 | `script_log` | Expanded script log path |
 
-## Directives Reference
+### Directives Reference
 
 | Directive | Purpose | Example |
 |-----------|---------|---------|
@@ -317,7 +313,7 @@ ansible-playbook -i inventory.ini site.yml -l routers
 | `@DRYRUN` | Command skipped in dry-run mode | `@DRYRUN shutdown` |
 | `@DIAGNOSTICS` | Enable command timing timestamps | `@DIAGNOSTICS` |
 
-## Device Profiles
+### Device Profiles
 
 Device profiles (`.dspy` files) handle platform-specific setup: paging, prompt patterns, and interactive prompt responses. They are applied automatically based on `network_os`.
 
@@ -332,9 +328,7 @@ Device profiles (`.dspy` files) handle platform-specific setup: paging, prompt p
 
 Profiles are searched in order: `./`, `~/.bront/`, `/etc/bront/`, collection `profiles/` directory, and finally an embedded fallback compiled into the module (always available, even inside Ansible's execution payload).
 
-### Custom Profiles
-
-Create a `.dspy` file with begin and logout sections:
+**Custom profiles** — create a `.dspy` file with begin and logout sections:
 
 ```
 ## begin commands start
@@ -351,7 +345,7 @@ exit
 
 Place in `./`, `~/.bront/`, or `/etc/bront/` and reference with `network_os` or `device_profile`.
 
-## @ONPROMPT / @RESPONSE
+### @ONPROMPT / @RESPONSE
 
 Global session watchers that handle interactive prompts appearing at any time during a session. Unlike `@PROMPT` (which is positional — it handles one specific prompt at one point in the script), `@ONPROMPT` patterns are watched during every command.
 
@@ -374,7 +368,7 @@ If the device prompts "Uncommitted changes found" at any point during the sessio
 
 These are primarily used in device profiles, so engineers don't need to handle platform-specific interactive prompts in their scripts.
 
-## @ONERROR / @REPORT and Structured Findings
+### @ONERROR / @REPORT and Structured Findings
 
 Define error patterns and generate structured findings with severity levels:
 
@@ -411,7 +405,7 @@ Findings are returned as structured JSON in the Ansible result (`findings[]` arr
 }
 ```
 
-## @PY Variables
+### @PY Variables
 
 | Variable | Description |
 |----------|-------------|
@@ -489,7 +483,7 @@ bront check_interface.bront ROUTER1 -e interface=GigabitEthernet0/0/0/1
       threshold: "{{ threshold | default(1000) }}"
 ```
 
-## Run ID and Directory Structure
+### Run ID and Directory Structure
 
 Use `run_id` to organize output from multi-device runs under a single identifier. Without `run_id`, each device gets a unique timestamped directory.
 
@@ -718,7 +712,7 @@ interface|GigabitEthernet0/0/0/1|description|Uplink| description Uplink
 
 Each pipe-delimited field becomes `col1`, `col2`, `col3`, etc. in SQL queries — or use bash tools directly.
 
-## Processing txtdb with Bash Pipelines
+### Processing txtdb with Bash Pipelines
 
 The pipe-delimited format works naturally with grep, sed, awk:
 
@@ -750,7 +744,7 @@ show interfaces
 @PY print(f"Up: {up_count}, Down: {down_count}")
 ```
 
-## Advanced: SQL Queries with @QUERY
+### Advanced: SQL Queries with @QUERY
 
 For most scripts, `bash()` with grep/awk on txtdb files is all you need. `@QUERY` is for advanced use cases — joining data across multiple command outputs using SQL:
 
@@ -807,7 +801,7 @@ show bgp summary
 - Standard SQL: SELECT, WHERE, JOIN, LIKE, IN, NOT IN
 - The `@@@` block executes for each row returned, with `{col1}`, `{col2}` substitution
 
-## File Locations
+### File Locations
 
 | File | Search Paths |
 |------|--------------|

@@ -3,6 +3,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/brontnet/bront-network)](https://github.com/brontnet/bront-network/releases)
+[![Ansible Galaxy](https://img.shields.io/badge/galaxy-bront.network-blue.svg)](https://galaxy.ansible.com/ui/repo/published/bront/network/)
 
 **CLI-native network automation.** Write what you would type — nothing more.
 
@@ -44,20 +45,25 @@ Same script, both modes — no changes needed.
 ## Install
 
 ```bash
-# Download latest release from GitHub
-# https://github.com/brontnet/bront-network/releases
-
-# Install as Ansible collection (includes standalone CLI)
-mkdir -p ~/.ansible/collections/ansible_collections/
-tar -xzf bront-network-<version>.tar.gz -C ~/.ansible/collections/ansible_collections/
+# From Ansible Galaxy (recommended)
+ansible-galaxy collection install bront.network
+pip install pexpect pyyaml
 
 # Add standalone CLI to PATH
 export PATH="$PATH:~/.ansible/collections/ansible_collections/bront/network/scripts"
 
-# Install Python dependencies
-pip install pexpect pyyaml
-
 # Verify
+bront --help
+```
+
+Or install from GitHub release:
+
+```bash
+# Download latest release from https://github.com/brontnet/bront-network/releases
+mkdir -p ~/.ansible/collections/ansible_collections/
+tar -xzf bront-network-<version>.tar.gz -C ~/.ansible/collections/ansible_collections/
+export PATH="$PATH:~/.ansible/collections/ansible_collections/bront/network/scripts"
+pip install pexpect pyyaml
 bront --help
 ```
 
@@ -105,6 +111,13 @@ bront check.bront ROUTER1
 
 ### Installation Options
 
+**From Ansible Galaxy** (recommended):
+
+```bash
+ansible-galaxy collection install bront.network
+pip install pexpect pyyaml
+```
+
 **Standalone only** (no Ansible needed):
 
 ```bash
@@ -116,7 +129,7 @@ pip install pexpect pyyaml
 bront --help
 ```
 
-**Ansible collection** (includes standalone CLI):
+**From GitHub release** (includes standalone CLI):
 
 ```bash
 mkdir -p ~/.ansible/collections/ansible_collections/
